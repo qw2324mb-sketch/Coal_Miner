@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>煤矿井下安全监测系统 - 实时预警仪表盘</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; }
+        body { background: #f0f4f8; margin: 0; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        
+        /* 预警条样式 */
+        .alert-bar {
+            background: #fff3cd;
+            border-left: 6px solid #ffc107;
+            border-radius: 12px;
+            padding: 12px 20px;
+            margin-bottom: 24px;
+            display: none;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .alert-bar.show { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .alert-icon { font-size: 1.8rem; }
+        .alert-message { flex: 1; font-weight: 600; }
+        .alert-danger { background: #f8d7da; border-left-color: #dc3545; color: #721c24; }
+        .alert-warning { background: #fff3cd; border-left-color: #ffc107; color: #856404; }
+        
+        /* 状态栏 */
+        .status-bar { background: white; border-radius: 20px; padding: 12px 20px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+        .connection { display: flex; align-items: center; gap: 12px; }
+        .led { width: 14px; height: 14px; border-radius: 50%; background-color: #ccc; box-shadow: 0 0 4px rgba(0,0,0,0.2); }
+        .led.online { background-color: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+        .status-text { font-weight: 600; font-size: 0.95rem; }
+        .timestamp { color: #5a6874; font-size: 0.85rem; }
+        
+        /* 卡片式数值面板 */
+        .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 30px; }
+        .card { background: white; border-radius: 24px; padding: 18px 16px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.05); position: relative; }
+        .card h3 { margin: 0 0 8px 0; font-size: 1rem; font-weight: 500; color: #4b5563; }
+        .card-value { font-size: 2.2rem; font-weight: 700; margin: 4px 0; }
+        .card-unit { font-size: 0.9rem; color: #6c757d; }
+        .temp-card .card-value { color: #e67e22; }
+        .hum-card .card-value { color: #3498db; }
+        .dist-card .card-value { color: #2c3e50; }
+        .pm-card .card-value { color: #e74c3c; }
+        .methane-card .card-value { color: #9b59b6; }
+        
+        /* 预警角标 */
+        .alarm-badge { position: absolute; top: 12px; right: 12px; width: 12px; height: 12px; border-radius: 50%; background: #ccc; }
+        .alarm-badge.danger { background: #dc3545; box-shadow: 0 0 6px #dc3545; animation: pulse 1s infinite; }
+        .alarm-badge.warning { background: #ffc107; box-shadow: 0 0 6px #ffc107; animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+        
+        /* 图表区域 */
+        .chart-container { background: white; border-radius: 24px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 24px; }
+        .chart-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+        .chart-title { font-size: 1.3rem; font-weight: 600; }
+        .button-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn { background: #f1f5f9; border: none; padding: 6px 14px; border-radius: 40px; font-size: 0.8rem; cursor: pointer; transition: 0.2s; font-weight: 500; }
+        .btn.active { background: #3b82f6; color: white; }
+        .btn:hover { background: #e2e8f0; }
+        .chart-wrapper { position: relative; height: 400px; }
+        .debug { background: #1e1e2f; color: #00ff9d; font-family: monospace; font-size: 11px; padding: 12px; border-radius: 16px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 20px; }
+        footer { text-align: center; font-size: 0.75rem; color: #7f8c8d; margin-top: 20px; }
+        
+        /* 声音开关按钮 */
+        .sound-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 40px;
+            padding: 8px 16px;
+            z-index: 100;
+            cursor: pointer;
+            font-size: 20px;
+            color: white;
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        .sound-toggle:hover {
+            background: rgba(0,0,0,0.8);
+        }
+        
+        @media (max-width: 640px) { .card-value { font-size: 1.6rem; } .chart-wrapper { height: 300px; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <!-- 声音开关按钮 -->
+    <div class="sound-toggle" id="soundToggleBtn">
+        <span id="soundIcon">🔇</span>
+        <span id="soundText">声音关</span>
+    </div>
+
+    <!-- 预警条 -->
+    <div id="alertBar" class="alert-bar">
+        <span class="alert-icon">⚠️</span>
+        <span class="alert-message" id="alertMessage">正在检测...</span>
+    </div>
+
+    <div class="status-bar">
+        <div class="connection">
+            <div class="led" id="led"></div>
+            <span class="status-text" id="connStatus">连接中...</span>
+        </div>
+        <div class="timestamp">最后更新: <span id="lastUpdate">--</span></div>
+    </div>
+
+    <div class="cards-grid">
+        <div class="card methane-card" id="methaneCard">
+            <div class="alarm-badge" id="methaneBadge"></div>
+            <h3>🔥 甲烷浓度</h3>
+            <div class="card-value" id="methaneVal">--</div>
+            <div class="card-unit">%LEL</div>
+        </div>
+        <div class="card dist-card" id="distCard">
+            <div class="alarm-badge" id="distBadge"></div>
+            <h3>📏 顶板距离</h3>
+            <div class="card-value" id="distVal">--</div>
+            <div class="card-unit">cm</div>
+        </div>
+        <div class="card pm-card" id="pmCard">
+            <div class="alarm-badge" id="pmBadge"></div>
+            <h3>🌫️ PM2.5</h3>
+            <div class="card-value" id="pmVal">--</div>
+            <div class="card-unit">µg/m³</div>
+        </div>
+        <div class="card temp-card"><h3>🌡️ 温度</h3><div class="card-value" id="tempVal">--</div><div class="card-unit">°C</div></div>
+        <div class="card hum-card"><h3>💧 湿度</h3><div class="card-value" id="humVal">--</div><div class="card-unit">%RH</div></div>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-header">
+            <div class="chart-title">📈 历史趋势曲线</div>
+            <div class="button-group" id="chartTypeGroup">
+                <button class="btn active" data-metric="temp">温度</button>
+                <button class="btn" data-metric="hum">湿度</button>
+                <button class="btn" data-metric="dist">距离</button>
+                <button class="btn" data-metric="pm25">PM2.5</button>
+                <button class="btn" data-metric="methane">甲烷</button>
+            </div>
+        </div>
+        <div class="chart-wrapper">
+            <canvas id="trendChart"></canvas>
+        </div>
+    </div>
+
+    <details>
+        <summary style="cursor:pointer; margin-bottom:8px;">🔧 调试信息</summary>
+        <div class="debug" id="debugInfo">等待请求...</div>
+    </details>
+    <footer>预警规则: 甲烷≥20%LEL 或 增速>0.5%/s | 顶板<50cm 或 下沉>2cm/s | PM2.5≥150µg/m³ | 数据通过代理轮询(3秒/次)</footer>
+</div>
+
+<script>
+    // ======================== 配置区 ========================
+    const UID = "0fe8bed8a042411db0eeeb65ded3ed05";   // 你的私钥（请确认）
+    const TOPIC = "Worker";                           // 设备ID
+    const API_URL = `/api/https://apis.bemfa.com/va/getmsg?uid=${UID}&topic=${TOPIC}&type=1&num=1`;
+    
+    // 预警阈值（可自由修改）
+    const ALERT_METHANE_ABS = 15.0;
+    const ALERT_METHANE_RATE = 0.5;
+    const ALERT_DISTANCE_ABS = 50.0;
+    const ALERT_DISTANCE_RATE = 2.0;
+    const ALERT_PM25_ABS = 60.0;
+    
+    // ========== 声音相关变量 ==========
+    let beepAudio = null;           // Audio 对象
+    let soundEnabled = false;       // 声音开关状态
+    
+    // =====================================================
+
+    let historyData = {
+        timeLabels: [], temp: [], hum: [], dist: [], pm25: [], methane: []
+    };
+    const MAX_POINTS = 100;
+    let chart = null;
+    let currentMetric = "temp";
+
+    let lastMethane = { value: null, timestamp: null };
+    let lastDistance = { value: null, timestamp: null };
+
+    // DOM 元素
+    const led = document.getElementById('led');
+    const connStatusSpan = document.getElementById('connStatus');
+    const lastUpdateSpan = document.getElementById('lastUpdate');
+    const debugDiv = document.getElementById('debugInfo');
+    const alertBar = document.getElementById('alertBar');
+    const alertMessageSpan = document.getElementById('alertMessage');
+    const methaneBadge = document.getElementById('methaneBadge');
+    const distBadge = document.getElementById('distBadge');
+    const pmBadge = document.getElementById('pmBadge');
+    const soundToggleBtn = document.getElementById('soundToggleBtn');
+    const soundIcon = document.getElementById('soundIcon');
+    const soundText = document.getElementById('soundText');
+
+    function logDebug(msg) {
+        const time = new Date().toLocaleTimeString();
+        debugDiv.innerText = `[${time}] ${msg}\n` + debugDiv.innerText;
+        if (debugDiv.innerText.length > 3000) debugDiv.innerText = debugDiv.innerText.substring(0, 2500);
+        console.log(msg);
+    }
+
+    // 初始化音频
+    function initAudio() {
+        beepAudio = new Audio('beep.mp3');   // 请确保 beep.mp3 与 HTML 在同一目录下
+        beepAudio.load();
+        beepAudio.onerror = () => console.error('音频文件加载失败，请检查 beep.mp3 是否存在');
+    }
+
+    // 播放提示音（仅在声音开启时）
+    function playBeep() {
+        if (!soundEnabled) return;
+        if (!beepAudio) return;
+        beepAudio.currentTime = 0;
+        beepAudio.play().catch(err => {
+            console.warn('播放失败', err);
+        });
+    }
+
+    // 切换声音开关
+ function toggleSound() {
+    soundEnabled = !soundEnabled;
+    if (soundEnabled) {
+        soundIcon.innerText = '🔊';
+        soundText.innerText = '声音开';
+        // 开启时，停止当前音频并播放测试音（解锁音频）
+        if (beepAudio) {
+            beepAudio.pause();
+            beepAudio.currentTime = 0;
+            beepAudio.play().catch(e => console.warn('首次播放需要用户手势', e));
+        }
+    } else {
+        soundIcon.innerText = '🔇';
+        soundText.innerText = '声音关';
+        // 关闭时，立即停止当前播放的音频
+        if (beepAudio) {
+            beepAudio.pause();
+            beepAudio.currentTime = 0;
+        }
+    }
+}
+
+    function updateDisplay(data) {
+        if (data.t !== undefined) document.getElementById('tempVal').innerText = data.t.toFixed(1);
+        if (data.h !== undefined) document.getElementById('humVal').innerText = data.h.toFixed(1);
+        if (data.d !== undefined) document.getElementById('distVal').innerText = data.d.toFixed(1);
+        if (data.p !== undefined) document.getElementById('pmVal').innerText = data.p.toFixed(1);
+        if (data.m !== undefined) document.getElementById('methaneVal').innerText = data.m.toFixed(1);
+        lastUpdateSpan.innerText = new Date().toLocaleTimeString('zh-CN');
+    }
+
+    function evaluateAlerts(methane, distance, pm25, timestampMs) {
+        let activeAlerts = [];
+
+        if (methane !== null && methane >= ALERT_METHANE_ABS) {
+            activeAlerts.push({ type: 'danger', msg: `🔥 甲烷浓度超限: ${methane.toFixed(1)}%LEL (阈值 ${ALERT_METHANE_ABS})` });
+            methaneBadge.className = 'alarm-badge danger';
+        } else if (methane !== null) {
+            if (lastMethane.value !== null && lastMethane.timestamp !== null) {
+                const dt = (timestampMs - lastMethane.timestamp) / 1000;
+                if (dt > 0.1 && dt < 10) {
+                    const rate = (methane - lastMethane.value) / dt;
+                    if (rate > ALERT_METHANE_RATE) {
+                        activeAlerts.push({ type: 'warning', msg: `⚠️ 甲烷浓度快速上升: +${rate.toFixed(2)}%LEL/s (阈值 ${ALERT_METHANE_RATE})` });
+                        methaneBadge.className = 'alarm-badge warning';
+                    } else {
+                        if (methaneBadge.className !== 'alarm-badge danger') methaneBadge.className = '';
+                    }
+                } else {
+                    if (methaneBadge.className !== 'alarm-badge danger') methaneBadge.className = '';
+                }
+            } else {
+                if (methaneBadge.className !== 'alarm-badge danger') methaneBadge.className = '';
+            }
+        } else {
+            methaneBadge.className = '';
+        }
+
+        if (distance !== null && distance < ALERT_DISTANCE_ABS) {
+            activeAlerts.push({ type: 'danger', msg: `📏 顶板距离过近: ${distance.toFixed(1)}cm (阈值 ${ALERT_DISTANCE_ABS}cm)` });
+            distBadge.className = 'alarm-badge danger';
+        } else if (distance !== null) {
+            if (lastDistance.value !== null && lastDistance.timestamp !== null) {
+                const dt = (timestampMs - lastDistance.timestamp) / 1000;
+                if (dt > 0.1 && dt < 10) {
+                    const sinkRate = (lastDistance.value - distance) / dt;
+                    if (sinkRate > ALERT_DISTANCE_RATE) {
+                        activeAlerts.push({ type: 'warning', msg: `⚠️ 顶板快速下沉: ${sinkRate.toFixed(1)}cm/s (阈值 ${ALERT_DISTANCE_RATE}cm/s)` });
+                        distBadge.className = 'alarm-badge warning';
+                    } else {
+                        if (distBadge.className !== 'alarm-badge danger') distBadge.className = '';
+                    }
+                } else {
+                    if (distBadge.className !== 'alarm-badge danger') distBadge.className = '';
+                }
+            } else {
+                if (distBadge.className !== 'alarm-badge danger') distBadge.className = '';
+            }
+        } else {
+            distBadge.className = '';
+        }
+
+        if (pm25 !== null && pm25 >= ALERT_PM25_ABS) {
+            activeAlerts.push({ type: 'danger', msg: `🌫️ PM2.5 浓度超标: ${pm25.toFixed(1)}µg/m³ (阈值 ${ALERT_PM25_ABS})` });
+            pmBadge.className = 'alarm-badge danger';
+        } else {
+            pmBadge.className = '';
+        }
+
+        if (activeAlerts.length > 0) {
+            const alertMsg = activeAlerts.map(a => a.msg).join('；');
+            alertMessageSpan.innerText = alertMsg;
+            alertBar.classList.add('show');
+            const hasDanger = activeAlerts.some(a => a.type === 'danger');
+            alertBar.classList.remove('alert-danger', 'alert-warning');
+            if (hasDanger) {
+                alertBar.classList.add('alert-danger');
+            } else {
+                alertBar.classList.add('alert-warning');
+            }
+            // 播放声音
+            playBeep();
+        } else {
+            alertBar.classList.remove('show');
+        }
+    }
+
+    function addDataPoint(data, timestampMs) {
+        const timeStr = new Date(timestampMs).toLocaleTimeString('zh-CN', { hour12: false });
+        historyData.timeLabels.push(timeStr);
+        historyData.temp.push(data.t);
+        historyData.hum.push(data.h);
+        historyData.dist.push(data.d);
+        historyData.pm25.push(data.p);
+        historyData.methane.push(data.m);
+        if (historyData.timeLabels.length > MAX_POINTS) {
+            historyData.timeLabels.shift();
+            historyData.temp.shift();
+            historyData.hum.shift();
+            historyData.dist.shift();
+            historyData.pm25.shift();
+            historyData.methane.shift();
+        }
+        updateChart();
+        evaluateAlerts(data.m, data.d, data.p, timestampMs);
+        lastMethane = { value: data.m, timestamp: timestampMs };
+        lastDistance = { value: data.d, timestamp: timestampMs };
+    }
+
+    function updateChart() {
+        if (!chart) return;
+        let dataset = [], yLabel = '', color = '';
+        switch(currentMetric) {
+            case 'temp': dataset = historyData.temp; yLabel = '温度 (°C)'; color = '#e67e22'; break;
+            case 'hum': dataset = historyData.hum; yLabel = '湿度 (%RH)'; color = '#3498db'; break;
+            case 'dist': dataset = historyData.dist; yLabel = '距离 (cm)'; color = '#2c3e50'; break;
+            case 'pm25': dataset = historyData.pm25; yLabel = 'PM2.5 (µg/m³)'; color = '#e74c3c'; break;
+            case 'methane': dataset = historyData.methane; yLabel = '甲烷 (%LEL)'; color = '#9b59b6'; break;
+            default: dataset = historyData.temp;
+        }
+        chart.data.datasets[0].data = dataset;
+        chart.data.datasets[0].label = yLabel;
+        chart.data.datasets[0].borderColor = color;
+        chart.data.datasets[0].backgroundColor = color + '20';
+        chart.data.labels = historyData.timeLabels;
+        chart.update();
+    }
+
+    function initChart() {
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        if (chart) chart.destroy();
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ data: [], borderWidth: 2, pointRadius: 3, tension: 0.2, fill: true }] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { tooltip: { mode: 'index' }, legend: { position: 'top' } },
+                scales: { x: { title: { display: true, text: '时间' } }, y: { title: { display: true, text: '数值' } } }
+            }
+        });
+        updateChart();
+    }
+
+    async function fetchData() {
+        const now = Date.now();
+        try {
+            logDebug(`请求: ${API_URL}`);
+            const response = await fetch(API_URL);
+            logDebug(`响应状态: ${response.status}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const result = await response.json();
+            logDebug(`返回数据: ${JSON.stringify(result).substring(0, 300)}`);
+
+            if (result && result.code === 0 && result.data && result.data.length > 0) {
+                const rawMsg = result.data[0].msg;
+                logDebug(`原始消息: ${rawMsg}`);
+                const sensor = JSON.parse(rawMsg);
+                if (sensor.t !== undefined && sensor.h !== undefined && sensor.d !== undefined && sensor.p !== undefined && sensor.m !== undefined) {
+                    updateDisplay(sensor);
+                    addDataPoint(sensor, now);
+                    led.classList.add('online');
+                    connStatusSpan.innerText = '在线 (代理轮询)';
+                } else {
+                    throw new Error('数据字段不完整');
+                }
+            } else {
+                logDebug(`API返回无数据或异常: ${JSON.stringify(result)}`);
+                led.classList.remove('online');
+                connStatusSpan.innerText = '无数据，等待中...';
+            }
+        } catch (err) {
+            logDebug(`错误: ${err.message}`);
+            led.classList.remove('online');
+            connStatusSpan.innerText = '连接失败，重试中...';
+        }
+    }
+
+    function startPolling() {
+        fetchData();
+        setInterval(fetchData, 3000);
+    }
+
+    function bindMetricSwitcher() {
+        const btns = document.querySelectorAll('#chartTypeGroup .btn');
+        btns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                btns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentMetric = btn.getAttribute('data-metric');
+                updateChart();
+            });
+        });
+    }
+
+    // 绑定声音开关事件
+    soundToggleBtn.addEventListener('click', toggleSound);
+
+    // 页面启动
+    window.addEventListener('load', () => {
+        initAudio();
+        initChart();
+        bindMetricSwitcher();
+        startPolling();
+    });
+</script>
+</body>
+</html>
